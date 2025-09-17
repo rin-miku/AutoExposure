@@ -3,44 +3,85 @@
 #define NUMTHREAD_X 16
 #define NUMTHREAD_Y 16
 
-struct AutoExposureParameters
+struct RWParameters
 {
     uint importance;
     uint luminance;
+    float historyEV;
+    float exposure;
+    float debugValue;
 };
 
-const float3 _RGB2Luminance = float3(0.2126, 0.7152, 0.0722);
+struct RParameters
+{
+    float deltaTime;
+};
+
+static const float3 _RGB2Luminance = float3(0.2126, 0.7152, 0.0722);
 
 RWTexture2D<float4> _ScreenTexture;
-RWStructuredBuffer<AutoExposureParameters> _Parameters;
+RWStructuredBuffer<RWParameters> _RWParameters;
+StructuredBuffer<RParameters> _RParameters;
 
 #pragma kernel AccumulateLuminance
 [numthreads(NUMTHREAD_X, NUMTHREAD_Y, 1)]
-void AccumulateLuminance(uint3 id : SV_DispatchThreadID)
+void AccumulateLuminance(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
 {
-    half2 uv = id.xy / _ScreenSize.xy;
+    if (!any(id.xy))
+    {
+        _RWParameters[0].importance = 0;
+        _RWParameters[0].luminance = 0;
+        _RWParameters[0].exposure = 0;
+    }
     
+    half2 uv = id.xy / _ScreenSize.xy;
     half2 uvCenter = half2(0.5, 0.5);
-    half importance = pow(saturate(1.0 - (distance(uv, uvCenter) * 2.0)), 2);
+    float importance = pow(saturate(1.0 - (distance(uv, uvCenter) * 2.0)), 2);
 
-    float3 screenColor = _ScreenTexture[id.xy];
+    float3 screenColor = _ScreenTexture[id.xy].rgb;
     float luminance = dot(screenColor, _RGB2Luminance);
     
-    uint imp = (uint) importance * 100;
-    uint lum = (uint) luminance * importance * 100;
-
-    InterlockedAdd(_Parameters[0].importance, imp);
-    InterlockedAdd(_Parameters[0].luminance, lum);
+    uint imp = (uint) (100.0 * importance);
+    uint lum = (uint) (100.0 * luminance * importance);
     
-    _ScreenTexture[id.xy] = _Parameters[0].luminance;
+    InterlockedAdd(_RWParameters[0].importance, imp);
+    InterlockedAdd(_RWParameters[0].luminance, lum);
+}
+
+float GetEV100(float luminance)
+{
+    luminance = max(luminance, 1e-5);
+    return log2(luminance * 8.0);
+}
+
+float GetTargetEV(float luminance)
+{
+    float avgEV = GetEV100(luminance);
+    float targetEV = avgEV;
+    float historyEV = _RWParameters[0].historyEV;
+    float diff = avgEV - historyEV;
+    float t = min(_RParameters[0].deltaTime, 0.033);
+    
+    return historyEV + diff * t;
 }
 
 #pragma kernel ComputeTargetEV
 [numthreads(1, 1, 1)]
 void ComputeTargetEV(uint3 id : SV_DispatchThreadID)
 {
-    float avgLuminance = (float) (_Parameters[0].luminance * 0.01) / (_Parameters[0].importance * 0.01);
-
+    float lum = 0.01 * _RWParameters[0].luminance;
+    float imp = max(0.01 * _RWParameters[0].importance, 1e-5);
+    float avgLuminance = lum / imp;
+    float targetEV = GetTargetEV(avgLuminance);
+    _RWParameters[0].historyEV = targetEV;
+    _RWParameters[0].exposure = 1.0 / pow(2.0, targetEV);
+    _RWParameters[0].debugValue = _RWParameters[0].exposure;
 }
 
-// TODO: ApplyExposure
+#pragma kernel ApplyExposure
+[numthreads(NUMTHREAD_X, NUMTHREAD_Y, 1)]
+void ApplyExposure(uint3 id : SV_DispatchThreadID)
+{
+    float3 screenColor = _ScreenTexture[id.xy].rgb;
+    _ScreenTexture[id.xy].rgba = float4(screenColor * _RWParameters[0].exposure, 1.0);
+}

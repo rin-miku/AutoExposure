@@ -4,19 +4,33 @@ using UnityEngine.Rendering;
 using UnityEngine.Rendering.RenderGraphModule;
 using UnityEngine.Rendering.RenderGraphModule.Util;
 using UnityEngine.Rendering.Universal;
+using static UnityEngine.Rendering.RenderGraphModule.Util.RenderGraphUtils;
 
 public class AutoExposureRenderPass : ScriptableRenderPass
 {
     private AutoExposureRenderSettings settings;
-    private AutoExposureParameters[] parameters;
-    private ComputeBuffer computeBuffer;
+    private RWParameters[] rwParameters;
+    private RParameters[] rParameters;
+    private ComputeBuffer rwParameterBuffer;
+    private ComputeBuffer rParameterBuffer;
     private Vector3Int numThreads = new Vector3Int(16, 16, 1);
-    
+    private int threadGroupsX;
+    private int threadGroupsY;
 
-    public struct AutoExposureParameters
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RWParameters
     {
-        uint importance;
-        uint luminance;
+        public uint importance;
+        public uint luminance;
+        public float historyEV;
+        public float exposure;
+        public float debugValue;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RParameters
+    {
+        public float deltaTime;
     }
 
     public class PassData
@@ -29,22 +43,36 @@ public class AutoExposureRenderPass : ScriptableRenderPass
     {
         settings = autoExposureRenderSettings;
 
-        parameters = new AutoExposureParameters[1];
-        computeBuffer = new ComputeBuffer(1, Marshal.SizeOf(typeof(AutoExposureParameters)));
-        computeBuffer.SetData(parameters);
+        rwParameters = new RWParameters[1];
+        rwParameterBuffer = new ComputeBuffer(1, Marshal.SizeOf(typeof(RWParameters)), ComputeBufferType.Structured);
+        rwParameterBuffer.SetData(rwParameters);
+
+        rParameters = new RParameters[1];
+        rParameterBuffer = new ComputeBuffer(1, Marshal.SizeOf(typeof(RParameters)), ComputeBufferType.Structured);
+        rParameterBuffer.SetData(rParameters);
+
+        threadGroupsX = Mathf.CeilToInt(Screen.width / (float)numThreads.x);
+        threadGroupsY = Mathf.CeilToInt(Screen.height / (float)numThreads.y);
+    }
+
+    public override void OnCameraCleanup(CommandBuffer cmd)
+    {
+        base.OnCameraCleanup(cmd);
     }
 
     public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
     {
         UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
         UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
+        Material blitMaterial = new Material(Shader.Find("Hidden/Universal/CoreBlit"));
 
         RenderTextureDescriptor descriptor = cameraData.cameraTargetDescriptor;
+        descriptor.msaaSamples = 1;
         descriptor.enableRandomWrite = true;
-        descriptor.colorFormat = RenderTextureFormat.ARGB32;
+        descriptor.colorFormat = RenderTextureFormat.ARGBHalf;
         descriptor.depthStencilFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.None;
         TextureHandle screenTexture = UniversalRenderer.CreateRenderGraphTexture(renderGraph, descriptor, "_ScreenTexture", false);
-        renderGraph.AddBlitPass(resourceData.cameraColor, screenTexture, Vector2.one, Vector2.zero);
+        renderGraph.AddBlitPass(resourceData.activeColorTexture, screenTexture, Vector2.one, Vector2.zero);
 
         using (var builder = renderGraph.AddComputePass("Auto Exposure", out PassData passData))
         {
@@ -56,16 +84,40 @@ public class AutoExposureRenderPass : ScriptableRenderPass
 
             builder.SetRenderFunc((PassData data, ComputeGraphContext context) =>
             {
+                UpdateRParameters();
+
                 ComputeShader computeShader = data.computeShader;
                 ComputeCommandBuffer ccb = context.cmd;
 
                 int kernelIndex = computeShader.FindKernel("AccumulateLuminance");
                 ccb.SetComputeTextureParam(computeShader, kernelIndex, "_ScreenTexture", data.screenTexture);
-                ccb.SetComputeBufferParam(computeShader, kernelIndex, "_Parameters", computeBuffer);
-                ccb.DispatchCompute(computeShader, kernelIndex, Screen.width / numThreads.x, Screen.height / numThreads.y, numThreads.z);
+                ccb.SetComputeBufferParam(computeShader, kernelIndex, "_RWParameters", rwParameterBuffer);
+                ccb.SetComputeBufferParam(computeShader, kernelIndex, "_RParameters", rParameterBuffer);
+                ccb.DispatchCompute(computeShader, kernelIndex, threadGroupsX, threadGroupsY, 1);
+
+                kernelIndex = computeShader.FindKernel("ComputeTargetEV");
+                ccb.SetComputeTextureParam(computeShader, kernelIndex, "_ScreenTexture", data.screenTexture);
+                ccb.SetComputeBufferParam(computeShader, kernelIndex, "_RWParameters", rwParameterBuffer);
+                ccb.SetComputeBufferParam(computeShader, kernelIndex, "_RParameters", rParameterBuffer);
+                ccb.DispatchCompute(computeShader, kernelIndex, 1, 1, 1);
+
+                kernelIndex = computeShader.FindKernel("ApplyExposure");
+                ccb.SetComputeTextureParam(computeShader, kernelIndex, "_ScreenTexture", data.screenTexture);
+                ccb.SetComputeBufferParam(computeShader, kernelIndex, "_RWParameters", rwParameterBuffer);
+                ccb.SetComputeBufferParam(computeShader, kernelIndex, "_RParameters", rParameterBuffer);
+                ccb.DispatchCompute(computeShader, kernelIndex, threadGroupsX, threadGroupsY, 1);
+
+                RWParameters[] temp = new RWParameters[1];
+                rwParameterBuffer.GetData(temp);
+                Debug.Log(temp[0].debugValue);
             });
         }
-
         resourceData.cameraColor = screenTexture;
+    }
+
+    private void UpdateRParameters()
+    {
+        rParameters[0].deltaTime = Time.deltaTime;
+        rParameterBuffer.SetData(rParameters);
     }
 }
