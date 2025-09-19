@@ -9,7 +9,6 @@ struct RWParameters
     uint luminance;
     float historyEV;
     float exposure;
-    float debugValue;
 };
 
 struct RParameters
@@ -75,7 +74,6 @@ void ComputeTargetEV(uint3 id : SV_DispatchThreadID)
     float targetEV = GetTargetEV(avgLuminance);
     _RWParameters[0].historyEV = targetEV;
     _RWParameters[0].exposure = 1.0 / pow(2.0, targetEV);
-    _RWParameters[0].debugValue = _RWParameters[0].exposure;
 }
 
 #pragma kernel ApplyExposure

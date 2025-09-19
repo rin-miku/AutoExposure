@@ -24,7 +24,6 @@ public class AutoExposureRenderPass : ScriptableRenderPass
         public uint luminance;
         public float historyEV;
         public float exposure;
-        public float debugValue;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -55,16 +54,10 @@ public class AutoExposureRenderPass : ScriptableRenderPass
         threadGroupsY = Mathf.CeilToInt(Screen.height / (float)numThreads.y);
     }
 
-    public override void OnCameraCleanup(CommandBuffer cmd)
-    {
-        base.OnCameraCleanup(cmd);
-    }
-
     public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
     {
         UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
         UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
-        Material blitMaterial = new Material(Shader.Find("Hidden/Universal/CoreBlit"));
 
         RenderTextureDescriptor descriptor = cameraData.cameraTargetDescriptor;
         descriptor.msaaSamples = 1;
@@ -92,7 +85,6 @@ public class AutoExposureRenderPass : ScriptableRenderPass
                 int kernelIndex = computeShader.FindKernel("AccumulateLuminance");
                 ccb.SetComputeTextureParam(computeShader, kernelIndex, "_ScreenTexture", data.screenTexture);
                 ccb.SetComputeBufferParam(computeShader, kernelIndex, "_RWParameters", rwParameterBuffer);
-                ccb.SetComputeBufferParam(computeShader, kernelIndex, "_RParameters", rParameterBuffer);
                 ccb.DispatchCompute(computeShader, kernelIndex, threadGroupsX, threadGroupsY, 1);
 
                 kernelIndex = computeShader.FindKernel("ComputeTargetEV");
@@ -104,12 +96,7 @@ public class AutoExposureRenderPass : ScriptableRenderPass
                 kernelIndex = computeShader.FindKernel("ApplyExposure");
                 ccb.SetComputeTextureParam(computeShader, kernelIndex, "_ScreenTexture", data.screenTexture);
                 ccb.SetComputeBufferParam(computeShader, kernelIndex, "_RWParameters", rwParameterBuffer);
-                ccb.SetComputeBufferParam(computeShader, kernelIndex, "_RParameters", rParameterBuffer);
                 ccb.DispatchCompute(computeShader, kernelIndex, threadGroupsX, threadGroupsY, 1);
-
-                RWParameters[] temp = new RWParameters[1];
-                rwParameterBuffer.GetData(temp);
-                Debug.Log(temp[0].debugValue);
             });
         }
         resourceData.cameraColor = screenTexture;

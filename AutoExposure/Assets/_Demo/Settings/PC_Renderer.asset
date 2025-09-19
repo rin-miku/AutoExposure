@@ -103,6 +103,3 @@ MonoBehaviour:
   m_Active: 1
   autoExposureRenderSettings:
     computeShader: {fileID: 7200000, guid: 396ddf0e05605b54fbf28acc96c90084, type: 3}
-    lerpSpeed: 2
-    minEV: 0
-    maxEV: 10
